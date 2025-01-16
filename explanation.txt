@@ -1,0 +1,207 @@
+import optuna
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+from tensorflow.keras.metrics import AUC, Precision, Recall
+import matplotlib.pyplot as plt
+import numpy as np
+
+explanation:
+we have imported optuna which is a hyperparameter
+tensorflow is used for used to develop models, image recognition, natural language process etc
+tensorflow keras is used for deep models and layers 
+EfficientNetB0 is a pre trained model used for hyperparameter tuning along with a optuna (its in the code)
+adam is a optimizers which is used for update the weights
+ReduceLROnPlateau decreases the learning rate when the specified metric stops improving (like if the loss function is getting higher doesn't leading to converge meaning the loss function is not decreasing)
+EarlyStopping its used for stopping the model building before overfitting 
+AUC, Precision, Recall :- techniques is used to check the model performance
+
+------------------------------------------------------------------------------------------------------------------
+
+# Load and preprocess the dataset
+train_dataset = tf.keras.preprocessing.image_dataset_from_directory(
+    '111/train',
+    image_size=(224, 224),
+    batch_size=32,
+    label_mode='categorical'
+)
+
+validation_dataset = tf.keras.preprocessing.image_dataset_from_directory(
+    '111/validation',
+    image_size=(224, 224),
+    batch_size=32,
+    label_mode='categorical'
+)
+
+
+explanation:
+ its just using keras to load all the images to train and validation variables
+training and validation will be divided into 70 and 30 percent 
+image size will be 224,224 why? to reduce the any image size into 224,224 so that all the images will be linear in size
+batch size : its 32 
+basically the thing if the dataset has 7000 dataset then its 7000/32 = 1 batch
+label mode is just categorical which is scab,rust etc 
+which should be maintained in category that's it
+
+------------------------------------------------------------------------------------------------------------------
+plt.figure(figsize=(10, 10))
+for images, labels in train_dataset.take(1):
+    for i in range(9):
+        ax = plt.subplot(3, 3, i + 1)
+        plt.imshow(images[i].numpy().astype("uint8"))
+        plt.title(labels[i].numpy())
+        plt.axis("off")
+
+its just printing the random images from the train_dataset just to check that whether the dataset is loaded correct or not
+printed 9 random images from all the 4 category 
+------------------------------------------------------------------------------------------------------------------
+# Data augmentation
+data_augmentation = models.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.1),
+    layers.RandomZoom(0.1),
+])
+
+
+
+-->data augmentation uses existing data to create new data samples to train deep learning model 
+we used horizontal, rotation, zoom in and out using keras layer
+------------------------------------------------------------------------------------------------------------------
+# Load EfficientNetB0 without top layers
+base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False  # Freeze initial layers
+
+
+-->EfficientNetB0 is base model we used for training the model and which help us to give the best parameters using optuna
+here we are just initialing the model 
+224,224,3 means x,y,z axis its size of the images
+
+will get to know detail in optuna code
+------------------------------------------------------------------------------------------------------------------
+
+# Define the objective function for Optuna
+def objective(trial):
+    # Suggest values for dropout rate and learning rate
+    dropout_rate = trial.suggest_float("dropout_rate", 0.3, 0.7)
+    learning_rate = trial.suggest_loguniform("learning_rate", 1e-5, 1e-3)
+
+    # Build the model
+    inputs = tf.keras.Input(shape=(224, 224, 3))
+    x = data_augmentation(inputs)
+    x = base_model(x, training=False)
+    x = layers.GlobalAveragePooling2D()(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    x = layers.Dense(1024, activation='relu')(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    outputs = layers.Dense(4, activation='softmax')(x)  # Assuming 4 classes
+    model = models.Model(inputs, outputs)
+
+-->this is model which is used for training evaluation that's it 
+
+    # Compile the model
+    model.compile(optimizer=Adam(learning_rate=learning_rate),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+
+    # Callbacks for early stopping and learning rate reduction
+    early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=2, verbose=1)
+
+    # Train the model with a small number of epochs for quick evaluation
+    history = model.fit(
+        train_dataset,
+        validation_data=validation_dataset,
+        epochs=5,  # Reduced epochs to speed up optimization
+        callbacks=[early_stopping, reduce_lr],
+        verbose=1
+    )
+
+-->The code builds a model using the hyperparameters (dropout_rate and learning_rate) and trains it on train_dataset.
+It also uses callbacks for early stopping and learning rate reduction to improve training efficiency.
+The training process is limited to 5 epochs, likely to speed up Optuna's tuning.
+
+    # Return the best validation loss as the objective value
+    val_loss = min(history.history['val_loss'])
+-->The code evaluates the model implicitly by tracking the val_loss (validation loss) during training.
+    return val_loss
+
+we are taking 2 hyperparameters which is learning rate and dropout rate (when can include n numbers of h.parameters)
+why did you guys only used 2 hyperparameter not more than that ??
+ans--> it takes more computational power means takes more time that's why we only used 2 h.parameters
+
+
+------------------------------------------------------------------------------------------------------------------
+# Run the Optuna study
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=10)  # Run 10 trials for optimization
+-->it just call the optuna method
+objective is a method name and n_trialas is parameter which tells how much trails it should run for 
+so optuna runs for 10 times
+-----------------------------------------------------------------------------------------------------------------
+# Get the best parameters
+best_params = study.best_params
+print("Best parameters found by Optuna:", best_params)
+
+
+--> here the best_params will hold the best values of both learning rate as well dropout rate 
+and printed
+-----------------------------------------------------------------------------------------------------------------
+
+# Build and compile the final model
+final_model = models.Sequential([
+    tf.keras.Input(shape=(224, 224, 3)),
+    data_augmentation,
+    base_model,
+    layers.GlobalAveragePooling2D(),
+    layers.BatchNormalization(),
+    layers.Dropout(best_dropout_rate),
+    layers.Dense(1024, activation='relu'),
+    layers.BatchNormalization(),
+    layers.Dropout(best_dropout_rate),
+    layers.Dense(4, activation='softmax')
+])
+
+
+
+-->we used hybrid model here which includes efficientnetb0 here its base_model and extra custom layer 
+by taking a best dropout rate and learning rate from the optuna's model
+here only best_droprate used not learning rate!!!!!!!!
+------------------------------------------------------------------------------------------------------------------
+# Compile with optimized learning rate
+final_model.compile(optimizer=Adam(learning_rate=best_learning_rate),
+                    loss='categorical_crossentropy',
+                    metrics=['accuracy', AUC(name='auc'), Precision(name='precision'), Recall(name='recall')])
+
+here we are compiling the model with the best learning rate with adam optimizer which given by optuna model
+loss function categorical_crossentropy 
+matrics is for why are we training for, like whats the motive 
+so we accuracy, auc then etc
+------------------------------------------------------------------------------------------------------------------
+# Train the final model
+history = final_model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=15,  # Full training
+    callbacks=[early_stopping, reduce_lr]
+)
+
+-->here happens the comparison btw the training set and validation set 
+which will ran for 15 epochs using early stopping and extra computational aspect called reducerolr something which I have explained earlier 
+
+
+these are the main things they will ask 
+
+summary
+
+2 dataset 
+train and valid contains 70:30 
+which will be feeded to optuna 
+optuna has a model which train and validate the dataset 
+optuna's work is to find the best parameter 
+after that best parameter will be feeded to the hybrid model which has efficient and custom layers
+after that we compile the model with the best parameters 
+that's it
